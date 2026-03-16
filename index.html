@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบลงชื่อเข้า-ออก ทำงาน | Unloose</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            green: '#1a472a', /* สีเขียวเข้ม */
+                            light: '#2d6a4f',
+                            yellow: '#fef08a', /* สีเหลืองอ่อน */
+                            yellowDark: '#fde047'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Prompt', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Google Fonts: Prompt -->
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- SweetAlert2 -->
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+    <style>
+        body { font-family: 'Prompt', sans-serif; background-color: #f3f4f6; }
+        .glass-effect {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body class="text-gray-800 antialiased h-screen flex flex-col">
+
+    <!-- App Container -->
+    <div id="app" class="flex-grow flex flex-col h-full w-full max-w-7xl mx-auto shadow-2xl bg-white overflow-hidden relative">
+        <!-- Content injected by JS -->
+    </div>
+
+    <script>
+        /* ==========================================
+           1. DATABASE SIMULATION (Mock Data in LocalStorage)
+           ========================================== */
+        const initDatabase = () => {
+            if(!localStorage.getItem('users')) {
+                localStorage.setItem('users', JSON.stringify([
+                    { id: 'admin@unloose.com', pass: '1234', name: 'ผู้ดูแล ระบบ', role: 'admin', wagePerHour: 0 },
+                    { id: 'boss@unloose.com', pass: '1234', name: 'นายจ้าง ใจดี', role: 'employer', wagePerHour: 0 },
+                    { id: 'staff@unloose.com', pass: '1234', name: 'พนักงาน ขยันขันแข็ง', role: 'employee', wagePerHour: 50 },
+                    { id: 'staff2@unloose.com', pass: '1234', name: 'สมชาย รักงาน', role: 'employee', wagePerHour: 55 }
+                ]));
+            }
+            if(!localStorage.getItem('settings')) {
+                localStorage.setItem('settings', JSON.stringify({
+                    targetLat: 13.7563, // พิกัดเริ่มต้น
+                    targetLng: 100.5018,
+                    radiusMeters: 100
+                }));
+            }
+            if(!localStorage.getItem('attendance')) {
+                localStorage.setItem('attendance', JSON.stringify([]));
+            }
+        };
+
+        const getDB = (key) => JSON.parse(localStorage.getItem(key));
+        const setDB = (key, data) => localStorage.setItem(key, JSON.stringify(data));
+
+        /* ==========================================
+           2. STATE MANAGEMENT
+           ========================================== */
+        let currentUser = null;
+        let clockInterval = null;
+        let filterStartDate = '';
+        let filterEndDate = '';
+
+        /* ==========================================
+           3. UTILITY FUNCTIONS
+           ========================================== */
+        const calculateDistance = (lat1, lon1, lat2, lon2) => {
+            const R = 6371e3;
+            const φ1 = lat1 * Math.PI/180;
+            const φ2 = lat2 * Math.PI/180;
+            const Δφ = (lat2-lat1) * Math.PI/180;
+            const Δλ = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ/2) * Math.sin(Δλ/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            return R * c; 
+        };
+
+        // ฟังก์ชันแปลงวันที่เป็น วัน-เดือน-ปี พ.ศ.
+        const formatDateThaiBE = (dateString) => {
+            if(!dateString) return '-';
+            const d = new Date(dateString);
+            const day = String(d.getDate()).padStart(2, '0');
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const yearBE = d.getFullYear() + 543;
+            return `${day}-${month}-${yearBE}`;
+        };
+
+        const calculateWorkHours = (checkInStr, checkOutStr) => {
+            if(!checkInStr || !checkOutStr) return { hours: 0, minutes: 0, text: '-' };
+            const diffMs = new Date(checkOutStr) - new Date(checkInStr);
+            const diffMins = Math.round(diffMs / 60000);
+            const hours = Math.floor(diffMins / 60);
+            const minutes = diffMins % 60;
+            return { hours, minutes, text: `${hours} ชม. ${minutes} นาที`, totalHoursFloat: diffMins/60 };
+        };
+
+        // Export Excel (รองรับการกรองวันที่)
+        const exportToExcel = () => {
+            let attendance = getDB('attendance');
+            const users = getDB('users');
+            
+            // กรองข้อมูลตามที่เลือกไว้ก่อน Export
+            if(filterStartDate) {
+                const start = new Date(filterStartDate);
+                start.setHours(0,0,0,0);
+                attendance = attendance.filter(a => new Date(a.checkInTime) >= start);
+            }
+            if(filterEndDate) {
+                const end = new Date(filterEndDate);
+                end.setHours(23,59,59,999);
+                attendance = attendance.filter(a => new Date(a.checkInTime) <= end);
+            }
+            
+            let csvContent = "data:text/csv;charset=utf-8,\uFEFF"; 
+            csvContent += "วันที่,ชื่อพนักงาน,เวลาเข้า,เวลาออก,ชั่วโมงทำงาน,ค่าจ้างต่อชั่วโมง,รวมค่าจ้าง\n";
+
+            attendance.forEach(record => {
+                const user = users.find(u => u.id === record.userId);
+                const userName = user ? user.name : record.userId;
+                const wageRate = user ? user.wagePerHour : 0;
+                
+                let workTime = { text: '-', totalHoursFloat: 0 };
+                let totalPay = 0;
+
+                if(record.checkOutTime) {
+                    workTime = calculateWorkHours(record.checkInTime, record.checkOutTime);
+                    totalPay = (workTime.totalHoursFloat * wageRate).toFixed(2);
+                }
+
+                const dateOnly = formatDateThaiBE(record.checkInTime);
+                const inTime = new Date(record.checkInTime).toLocaleTimeString('th-TH');
+                const outTime = record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('th-TH') : '-';
+
+                const row = `${dateOnly},${userName},${inTime},${outTime},${workTime.text},${wageRate},${totalPay}`;
+                csvContent += row + "\n";
+            });
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `รายงานการทำงาน_${formatDateThaiBE(new Date())}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        };
+
+        /* ==========================================
+           4. CORE LOGIC
+           ========================================== */
+        const handleLogin = (e) => {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const pass = document.getElementById('password').value;
+            
+            const users = getDB('users');
+            const user = users.find(u => u.id === email && u.pass === pass);
+
+            if (user) {
+                currentUser = user;
+                Swal.fire({
+                    icon: 'success', title: 'เข้าสู่ระบบสำเร็จ', text: `ยินดีต้อนรับ ${user.name}`,
+                    timer: 1500, showConfirmButton: false
+                });
+                renderApp();
+            } else {
+                Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบล้มเหลว', text: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง!' });
+            }
+        };
+
+        const handleLogout = () => {
+            currentUser = null;
+            if(clockInterval) clearInterval(clockInterval);
+            renderApp();
+        };
+
+        const handleClockAction = async (type) => {
+            const settings = getDB('settings');
+            
+            Swal.fire({ title: 'กำลังดึงตำแหน่งปัจจุบัน...', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+
+            if (!navigator.geolocation) {
+                Swal.fire('ข้อผิดพลาด', 'อุปกรณ์หรือเบราว์เซอร์ของคุณไม่รองรับ GPS', 'error');
+                return;
+            }
+
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    const currentLat = position.coords.latitude;
+                    const currentLng = position.coords.longitude;
+                    const distance = calculateDistance(settings.targetLat, settings.targetLng, currentLat, currentLng);
+
+                    if (distance > settings.radiusMeters) {
+                        Swal.fire({
+                            icon: 'error', title: 'ไม่อยู่ในพื้นที่',
+                            text: `คุณอยู่ห่างจากจุดเช็คอิน ${Math.round(distance)} เมตร (กำหนดไว้ไม่เกิน ${settings.radiusMeters} ม.)`
+                        });
+                        return;
+                    }
+                    saveAttendanceRecord(type);
+                },
+                (error) => {
+                    // จัดการ Error การขอสิทธิ์อย่างชัดเจน
+                    let errorMsg = 'ไม่สามารถดึงตำแหน่งพิกัดได้ กรุณาเปิด GPS';
+                    if(error.code === 1) { // PERMISSION_DENIED
+                        errorMsg = 'คุณไม่อนุญาตให้ระบบเข้าถึงตำแหน่ง (Location)\nกรุณาไปที่การตั้งค่าเบราว์เซอร์เพื่ออนุญาตให้เว็บไซต์นี้เข้าถึงตำแหน่งของคุณ';
+                    } else if (error.code === 2) { // POSITION_UNAVAILABLE
+                        errorMsg = 'สัญญาณ GPS อ่อนหรือไม่พร้อมใช้งาน กรุณาลองใหม่ในที่โล่ง';
+                    }
+                    Swal.fire('ข้อผิดพลาด', errorMsg, 'error');
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        };
+
+        const saveAttendanceRecord = (type) => {
+            let attendance = getDB('attendance');
+            const now = new Date().toISOString();
+            const todayStr = new Date().toLocaleDateString('th-TH');
+
+            if (type === 'in') {
+                const alreadyIn = attendance.find(a => a.userId === currentUser.id && !a.checkOutTime && new Date(a.checkInTime).toLocaleDateString('th-TH') === todayStr);
+                if (alreadyIn) {
+                    Swal.fire('แจ้งเตือน', 'คุณได้ลงชื่อเข้าทำงานไปแล้ว และยังไม่ได้ลงเวลาออก', 'warning'); return;
+                }
+                attendance.push({ id: Date.now().toString(), userId: currentUser.id, checkInTime: now, checkOutTime: null });
+                Swal.fire('สำเร็จ', 'บันทึกเวลาเข้างานเรียบร้อย', 'success');
+            } else if (type === 'out') {
+                let activeRecordIndex = attendance.findIndex(a => a.userId === currentUser.id && !a.checkOutTime);
+                if (activeRecordIndex === -1) {
+                    Swal.fire('แจ้งเตือน', 'ไม่พบประวัติการลงเวลาเข้างาน หรือคุณลงเวลาออกไปแล้ว', 'error'); return;
+                }
+                attendance[activeRecordIndex].checkOutTime = now;
+                const workTime = calculateWorkHours(attendance[activeRecordIndex].checkInTime, now);
+                Swal.fire('สำเร็จ', `บันทึกเวลาออกงานเรียบร้อย\nทำงานไป: ${workTime.text}`, 'success');
+            }
+            setDB('attendance', attendance);
+            renderDashboardContent();
+        };
+
+        // --- Admin Functions ---
+        const autoFetchAdminLocation = () => {
+            if (!navigator.geolocation) {
+                Swal.fire('ข้อผิดพลาด', 'อุปกรณ์ไม่รองรับ GPS', 'error'); return;
+            }
+            Swal.fire({ title: 'กำลังดึงพิกัด...', didOpen: () => { Swal.showLoading(); }});
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    document.getElementById('setLat').value = pos.coords.latitude;
+                    document.getElementById('setLng').value = pos.coords.longitude;
+                    Swal.fire('สำเร็จ', 'ดึงพิกัดปัจจุบันเรียบร้อยแล้ว กดบันทึกเพื่อยืนยัน', 'success');
+                },
+                (err) => {
+                    let msg = 'ไม่สามารถดึงตำแหน่งได้';
+                    if(err.code === 1) msg = 'กรุณาอนุญาตให้ระบบเข้าถึงตำแหน่ง (Location) ในตั้งค่าเบราว์เซอร์';
+                    Swal.fire('ข้อผิดพลาด', msg, 'error');
+                },
+                { enableHighAccuracy: true }
+            );
+        };
+
+        const saveLocationSettings = (e) => {
+            e.preventDefault();
+            const lat = parseFloat(document.getElementById('setLat').value);
+            const lng = parseFloat(document.getElementById('setLng').value);
+            const radius = parseInt(document.getElementById('setRadius').value);
+            setDB('settings', { targetLat: lat, targetLng: lng, radiusMeters: radius });
+            Swal.fire('สำเร็จ', 'บันทึกการตั้งค่าพิกัดเรียบร้อย', 'success');
+        };
+
+        const saveEmployee = (e) => {
+            e.preventDefault();
+            const email = document.getElementById('empEmail').value;
+            const pass = document.getElementById('empPass').value;
+            const name = document.getElementById('empName').value;
+            const role = document.getElementById('empRole').value;
+            const wage = parseFloat(document.getElementById('empWage').value);
+
+            let users = getDB('users');
+            const existing = users.find(u => u.id === email);
+            
+            if(existing) {
+                existing.name = name; existing.pass = pass; existing.role = role; existing.wagePerHour = wage;
+                Swal.fire('สำเร็จ', 'อัปเดตข้อมูลพนักงานเรียบร้อย', 'success');
+            } else {
+                users.push({ id: email, pass: pass, name: name, role: role, wagePerHour: wage });
+                Swal.fire('สำเร็จ', 'เพิ่มพนักงานใหม่เรียบร้อย', 'success');
+            }
+            setDB('users', users); e.target.reset(); renderAdminPanel();
+        };
+
+        /* ==========================================
+           5. UI RENDERING
+           ========================================== */
+        const renderApp = () => {
+            const appDiv = document.getElementById('app');
+            if (!currentUser) {
+                appDiv.innerHTML = renderLogin();
+            } else {
+                appDiv.innerHTML = `${renderNavbar()}<div id="main-content" class="flex-grow p-4 md:p-8 overflow-y-auto w-full"></div>`;
+                renderDashboardContent();
+            }
+        };
+
+        const renderLogin = () => `
+            <div class="flex-grow flex items-center justify-center bg-brand-green relative p-4">
+                <div class="glass-effect p-8 md:p-10 rounded-2xl shadow-2xl w-full max-w-md z-10 border border-brand-yellow/30">
+                    <div class="text-center mb-8">
+                        <img src="https://img2.pic.in.th/logo-unloose.jpg" alt="logo unloose" class="mx-auto h-24 w-24 object-cover rounded-full border-4 border-brand-yellow mb-4 shadow-lg">
+                        <h2 class="text-2xl font-bold text-brand-green">ลงชื่อเข้า-ออก ทำงาน</h2>
+                    </div>
+                    <form onsubmit="handleLogin(event)" class="space-y-6">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1"><i class="fa-solid fa-envelope mr-1"></i> อีเมล (User ID)</label>
+                            <input type="email" id="email" required class="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-brand-green outline-none" value="staff@unloose.com">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1"><i class="fa-solid fa-lock mr-1"></i> รหัสผ่าน</label>
+                            <input type="password" id="password" required class="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-brand-green outline-none" value="1234">
+                        </div>
+                        <button type="submit" class="w-full bg-brand-green hover:bg-brand-light text-white font-bold py-3 px-4 rounded-xl shadow-md flex items-center justify-center gap-2">
+                            <span>เข้าสู่ระบบ</span><i class="fa-solid fa-arrow-right-to-bracket"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        `;
+
+        const renderNavbar = () => `
+            <nav class="bg-brand-green text-white shadow-md">
+                <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                    <div class="flex justify-between h-16">
+                        <div class="flex items-center gap-3">
+                            <img src="https://img2.pic.in.th/logo-unloose.jpg" class="h-10 w-10 rounded-full border-2 border-brand-yellow">
+                            <span class="font-bold text-lg hidden sm:block text-brand-yellow">Unloose System</span>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            <div class="text-right hidden sm:block">
+                                <p class="text-sm font-medium text-brand-yellow">${currentUser.name}</p>
+                                <p class="text-xs text-gray-300 capitalize">Role: ${currentUser.role}</p>
+                            </div>
+                            <button onclick="handleLogout()" class="bg-red-500 hover:bg-red-600 px-3 py-2 rounded-lg text-sm shadow-sm">
+                                <i class="fa-solid fa-sign-out-alt"></i> <span class="hidden sm:inline ml-1">ออกจากระบบ</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </nav>
+            <div class="bg-brand-yellow text-brand-green py-2 px-4 flex justify-center gap-4 text-sm font-semibold shadow-inner" id="nav-tabs">
+                <button onclick="changeTab('dashboard')" class="hover:underline flex items-center gap-1"><i class="fa-solid fa-clock"></i> หน้าแรก</button>
+                ${(currentUser.role === 'admin' || currentUser.role === 'employer') ? `<button onclick="changeTab('reports')" class="hover:underline flex items-center gap-1"><i class="fa-solid fa-chart-bar"></i> รายงานนายจ้าง</button>` : ''}
+                ${currentUser.role === 'admin' ? `<button onclick="changeTab('admin')" class="hover:underline flex items-center gap-1"><i class="fa-solid fa-cog"></i> ตั้งค่าแอดมิน</button>` : ''}
+            </div>
+        `;
+
+        let currentTab = 'dashboard';
+        const changeTab = (tab) => { currentTab = tab; renderDashboardContent(); };
+
+        const renderDashboardContent = () => {
+            const content = document.getElementById('main-content');
+            if(currentTab === 'dashboard') content.innerHTML = renderEmployeeDashboard();
+            else if(currentTab === 'reports') content.innerHTML = renderEmployerDashboard();
+            else if(currentTab === 'admin') content.innerHTML = renderAdminPanel();
+
+            if(currentTab === 'dashboard') {
+                if(clockInterval) clearInterval(clockInterval);
+                const updateClock = () => {
+                    const el = document.getElementById('live-clock');
+                    if(el) el.innerText = new Date().toLocaleTimeString('th-TH');
+                };
+                updateClock();
+                clockInterval = setInterval(updateClock, 1000);
+            }
+        };
+
+        const renderEmployeeDashboard = () => {
+            const attendance = getDB('attendance').filter(a => a.userId === currentUser.id);
+            const activeRecord = attendance.find(a => !a.checkOutTime && new Date(a.checkInTime).toLocaleDateString('th-TH') === new Date().toLocaleDateString('th-TH'));
+
+            let historyRows = attendance.sort((a,b) => new Date(b.checkInTime) - new Date(a.checkInTime)).slice(0, 10).map(record => {
+                const workTime = record.checkOutTime ? calculateWorkHours(record.checkInTime, record.checkOutTime).text : 'กำลังทำงาน...';
+                return `
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-3 px-4">${formatDateThaiBE(record.checkInTime)}</td>
+                        <td class="py-3 px-4 text-green-600"><i class="fa-solid fa-arrow-right-to-bracket mr-1"></i>${new Date(record.checkInTime).toLocaleTimeString('th-TH')}</td>
+                        <td class="py-3 px-4 text-red-600">${record.checkOutTime ? `<i class="fa-solid fa-arrow-right-from-bracket mr-1"></i>${new Date(record.checkOutTime).toLocaleTimeString('th-TH')}` : '-'}</td>
+                        <td class="py-3 px-4 font-medium text-brand-light">${workTime}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            return `
+                <div class="max-w-4xl mx-auto space-y-6">
+                    <div class="bg-white rounded-2xl shadow-lg p-6 md:p-10 text-center border-t-4 border-brand-green">
+                        <h2 class="text-xl font-bold text-gray-700 mb-2">เวลาปัจจุบัน</h2>
+                        <div id="live-clock" class="text-5xl md:text-6xl font-mono font-bold text-brand-green mb-8 tracking-wider">--:--:--</div>
+                        
+                        <div class="flex flex-col sm:flex-row justify-center gap-4">
+                            <button onclick="handleClockAction('in')" class="${activeRecord ? 'bg-gray-300 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600'} text-white rounded-xl py-4 px-8 text-xl font-bold shadow-md flex items-center justify-center gap-2 w-full sm:w-auto" ${activeRecord ? 'disabled' : ''}>
+                                <i class="fa-solid fa-sign-in-alt"></i> เช็คอิน (เข้างาน)
+                            </button>
+                            <button onclick="handleClockAction('out')" class="${!activeRecord ? 'bg-gray-300 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} text-white rounded-xl py-4 px-8 text-xl font-bold shadow-md flex items-center justify-center gap-2 w-full sm:w-auto" ${!activeRecord ? 'disabled' : ''}>
+                                <i class="fa-solid fa-sign-out-alt"></i> เช็คเอาท์ (ออกงาน)
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
+                        <h3 class="text-lg font-bold text-brand-green mb-4 border-b pb-2"><i class="fa-solid fa-history mr-2"></i> ประวัติการทำงานของคุณ (ล่าสุด)</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse whitespace-nowrap">
+                                <thead>
+                                    <tr class="bg-gray-100 text-gray-700">
+                                        <th class="py-3 px-4 rounded-tl-lg">วันที่ (พ.ศ.)</th>
+                                        <th class="py-3 px-4">เวลาเข้า</th>
+                                        <th class="py-3 px-4">เวลาออก</th>
+                                        <th class="py-3 px-4 rounded-tr-lg">รวมเวลา</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${historyRows || `<tr><td colspan="4" class="text-center py-4 text-gray-500">ไม่มีประวัติ</td></tr>`}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        // --- Employer Table Generation (With Filters) ---
+        const handleFilterChange = () => {
+            filterStartDate = document.getElementById('filterStartDate').value;
+            filterEndDate = document.getElementById('filterEndDate').value;
+            document.getElementById('employer-table-body').innerHTML = generateEmployerTableRows();
+        };
+
+        const generateEmployerTableRows = () => {
+            let attendance = getDB('attendance');
+            const users = getDB('users');
+            
+            if(filterStartDate) {
+                const start = new Date(filterStartDate); start.setHours(0,0,0,0);
+                attendance = attendance.filter(a => new Date(a.checkInTime) >= start);
+            }
+            if(filterEndDate) {
+                const end = new Date(filterEndDate); end.setHours(23,59,59,999);
+                attendance = attendance.filter(a => new Date(a.checkInTime) <= end);
+            }
+
+            let reportRows = attendance.sort((a,b) => new Date(b.checkInTime) - new Date(a.checkInTime)).map(record => {
+                const user = users.find(u => u.id === record.userId);
+                const userName = user ? user.name : record.userId;
+                const wageRate = user ? user.wagePerHour : 0;
+                
+                let workTimeText = '-'; let totalPayText = '-';
+                if(record.checkOutTime) {
+                    const timeCalc = calculateWorkHours(record.checkInTime, record.checkOutTime);
+                    workTimeText = timeCalc.text;
+                    const totalPay = (timeCalc.totalHoursFloat * wageRate).toFixed(2);
+                    totalPayText = `฿${totalPay}`;
+                } else {
+                    workTimeText = '<span class="text-yellow-600 animate-pulse">กำลังทำงาน</span>';
+                }
+
+                return `
+                    <tr class="border-b hover:bg-gray-50 text-sm">
+                        <td class="py-2 px-4">${formatDateThaiBE(record.checkInTime)}</td>
+                        <td class="py-2 px-4 font-medium">${userName}</td>
+                        <td class="py-2 px-4 text-green-600">${new Date(record.checkInTime).toLocaleTimeString('th-TH')}</td>
+                        <td class="py-2 px-4 text-red-600">${record.checkOutTime ? new Date(record.checkOutTime).toLocaleTimeString('th-TH') : '-'}</td>
+                        <td class="py-2 px-4">${workTimeText}</td>
+                        <td class="py-2 px-4 text-right">฿${wageRate}/ชม.</td>
+                        <td class="py-2 px-4 text-right font-bold text-brand-green">${totalPayText}</td>
+                    </tr>
+                `;
+            }).join('');
+            return reportRows || `<tr><td colspan="7" class="text-center py-6 text-gray-500">ไม่มีข้อมูลในช่วงวันที่เลือก</td></tr>`;
+        };
+
+        const renderEmployerDashboard = () => `
+            <div class="max-w-6xl mx-auto space-y-4">
+                <div class="flex flex-col md:flex-row justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-gray-100 gap-4">
+                    <h2 class="text-xl font-bold text-brand-green"><i class="fa-solid fa-users mr-2"></i> ข้อมูลการทำงาน</h2>
+                    
+                    <div class="flex flex-wrap items-center gap-3">
+                        <div class="flex items-center gap-2 bg-gray-50 p-2 rounded-lg border">
+                            <label class="text-sm text-gray-600">ตั้งแต่วันที่:</label>
+                            <input type="date" id="filterStartDate" value="${filterStartDate}" onchange="handleFilterChange()" class="border rounded px-2 py-1 text-sm outline-none">
+                            <label class="text-sm text-gray-600">ถึง:</label>
+                            <input type="date" id="filterEndDate" value="${filterEndDate}" onchange="handleFilterChange()" class="border rounded px-2 py-1 text-sm outline-none">
+                        </div>
+                        <button onclick="exportToExcel()" class="bg-brand-yellow text-brand-green font-bold py-2 px-4 rounded-lg hover:bg-brand-yellowDark shadow flex items-center gap-2 text-sm whitespace-nowrap">
+                            <i class="fa-solid fa-file-excel"></i> Export Excel
+                        </button>
+                    </div>
+                </div>
+
+                <div class="bg-white rounded-xl shadow-lg overflow-hidden border border-gray-100">
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse whitespace-nowrap">
+                            <thead>
+                                <tr class="bg-brand-green text-white">
+                                    <th class="py-3 px-4">วันที่ (พ.ศ.)</th>
+                                    <th class="py-3 px-4">พนักงาน</th>
+                                    <th class="py-3 px-4">เวลาเข้า</th>
+                                    <th class="py-3 px-4">เวลาออก</th>
+                                    <th class="py-3 px-4">ชั่วโมงทำงาน</th>
+                                    <th class="py-3 px-4 text-right">เรทค่าจ้าง</th>
+                                    <th class="py-3 px-4 text-right">รวมค่าจ้าง</th>
+                                </tr>
+                            </thead>
+                            <tbody id="employer-table-body">
+                                ${generateEmployerTableRows()}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const renderAdminPanel = () => {
+            const settings = getDB('settings');
+            const users = getDB('users');
+            let userRows = users.map(u => `
+                <tr class="border-b hover:bg-gray-50 text-sm">
+                    <td class="py-2 px-4">${u.id}</td>
+                    <td class="py-2 px-4">${u.name}</td>
+                    <td class="py-2 px-4"><span class="px-2 py-1 rounded text-xs ${u.role==='admin'?'bg-red-100 text-red-800' : u.role==='employer'?'bg-blue-100 text-blue-800':'bg-green-100 text-green-800'}">${u.role}</span></td>
+                    <td class="py-2 px-4 text-right">฿${u.wagePerHour}</td>
+                </tr>
+            `).join('');
+
+            return `
+                <div class="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div class="bg-white rounded-xl shadow-lg p-6 border-t-4 border-blue-500">
+                        <div class="flex justify-between items-center mb-4 border-b pb-2">
+                            <h3 class="text-lg font-bold text-gray-700"><i class="fa-solid fa-map-marker-alt text-red-500 mr-2"></i> ตั้งค่าสถานที่เช็คอิน</h3>
+                            <button type="button" onclick="autoFetchAdminLocation()" class="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 py-1 px-3 rounded border flex items-center gap-1">
+                                <i class="fa-solid fa-location-crosshairs"></i> ดึงพิกัดปัจจุบัน
+                            </button>
+                        </div>
+                        <form onsubmit="saveLocationSettings(event)" class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label class="block text-xs text-gray-500 mb-1">ละติจูด (Latitude)</label><input type="number" step="any" id="setLat" value="${settings.targetLat}" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm bg-gray-50"></div>
+                                <div><label class="block text-xs text-gray-500 mb-1">ลองจิจูด (Longitude)</label><input type="number" step="any" id="setLng" value="${settings.targetLng}" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm bg-gray-50"></div>
+                            </div>
+                            <div><label class="block text-xs text-gray-500 mb-1">ระยะรัศมีที่อนุญาต (เมตร)</label><input type="number" id="setRadius" value="${settings.radiusMeters}" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm"></div>
+                            <button type="submit" class="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded-lg text-sm">บันทึกพิกัด</button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-lg p-6 border-t-4 border-brand-green">
+                        <h3 class="text-lg font-bold text-gray-700 mb-4 border-b pb-2"><i class="fa-solid fa-user-plus text-brand-green mr-2"></i> เพิ่ม/แก้ไข พนักงาน</h3>
+                        <form onsubmit="saveEmployee(event)" class="space-y-4">
+                            <div class="grid grid-cols-2 gap-4">
+                                <div><label class="block text-xs text-gray-500 mb-1">อีเมล (ใช้ Login)</label><input type="email" id="empEmail" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm"></div>
+                                <div><label class="block text-xs text-gray-500 mb-1">รหัสผ่าน</label><input type="text" id="empPass" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm"></div>
+                            </div>
+                            <div><label class="block text-xs text-gray-500 mb-1">ชื่อ-นามสกุล</label><input type="text" id="empName" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm"></div>
+                            <div class="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label class="block text-xs text-gray-500 mb-1">ตำแหน่ง (Role)</label>
+                                    <select id="empRole" class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm bg-white">
+                                        <option value="employee">พนักงาน (Employee)</option><option value="employer">นายจ้าง (Employer)</option><option value="admin">ผู้ดูแลระบบ (Admin)</option>
+                                    </select>
+                                </div>
+                                <div><label class="block text-xs text-gray-500 mb-1">ค่าจ้างต่อชั่วโมง (บาท)</label><input type="number" id="empWage" value="50" required class="w-full px-3 py-2 border rounded-lg focus:ring-1 outline-none text-sm"></div>
+                            </div>
+                            <button type="submit" class="w-full bg-brand-green hover:bg-brand-light text-white font-bold py-2 rounded-lg text-sm">บันทึกข้อมูลพนักงาน</button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white rounded-xl shadow-lg p-6 lg:col-span-2 border border-gray-100">
+                        <h3 class="text-lg font-bold text-gray-700 mb-4 border-b pb-2"><i class="fa-solid fa-list mr-2"></i> รายชื่อผู้ใช้งานในระบบ</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-left border-collapse whitespace-nowrap">
+                                <thead>
+                                    <tr class="bg-gray-100 text-gray-700">
+                                        <th class="py-2 px-4">อีเมล (ID)</th><th class="py-2 px-4">ชื่อ-นามสกุล</th><th class="py-2 px-4">ระดับสิทธิ์</th><th class="py-2 px-4 text-right">เรทค่าจ้าง/ชม.</th>
+                                    </tr>
+                                </thead>
+                                <tbody>${userRows}</tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            `;
+        };
+
+        // Initialize App
+        initDatabase();
+        renderApp();
+    </script>
+</body>
+</html>
