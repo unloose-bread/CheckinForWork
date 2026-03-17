@@ -335,6 +335,22 @@
         let userCurrentLocation = { lat: null, lng: null };
         let cameraStream = null;
 
+        // ฟังก์ชันช่วยแปลงวันที่ให้เป็นรูปแบบ YYYY-MM-DD แบบ Local เสมอ
+        function getLocalYYYYMMDD(dateVal) {
+            if (!dateVal || dateVal === '-') return '-';
+            // กรณีเป็น String ที่จัดรูปแบบมาเรียบร้อยแล้ว
+            if (typeof dateVal === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateVal)) return dateVal;
+            
+            const d = new Date(dateVal);
+            if (isNaN(d.getTime())) {
+                return String(dateVal).split('T')[0]; // สำรองกรณีแปลงไม่ผ่าน
+            }
+            const y = d.getFullYear();
+            const m = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            return `${y}-${m}-${day}`;
+        }
+
         // ฟังก์ชันช่วยจัด Format เวลา (ดึงเฉพาะ HH:mm ป้องกันปัญหาเวลาจาก Sheets แสดงเป็นเลขยาวๆ)
         function formatTime(timeStr) {
             if (!timeStr || timeStr === '-') return '-';
@@ -408,9 +424,18 @@
             const data = await callAPI({ action: 'getData' }, 'กำลังโหลดข้อมูลจากระบบ...');
             if(data.success) {
                 APP_SETTINGS = data.settings;
-                // ตัดข้อมูลเวลายาวๆ ให้เหลือแค่ HH:mm
-                ATTENDANCE_DATA = data.attendance.map(r => ({ ...r, timeIn: formatTime(r.timeIn), timeOut: formatTime(r.timeOut) }));
-                MOCK_USERS = data.users.map(u => ({ ...u, shiftStart: formatTime(u.shiftStart), shiftEnd: formatTime(u.shiftEnd) }));
+                // ตัดข้อมูลเวลายาวๆ ให้เหลือแค่ HH:mm และแปลงวันที่ให้อยู่ในฟอร์แมต YYYY-MM-DD แบบ Local
+                ATTENDANCE_DATA = data.attendance.map(r => ({ 
+                    ...r, 
+                    date: getLocalYYYYMMDD(r.date),
+                    timeIn: formatTime(r.timeIn), 
+                    timeOut: formatTime(r.timeOut) 
+                }));
+                MOCK_USERS = data.users.map(u => ({ 
+                    ...u, 
+                    shiftStart: formatTime(u.shiftStart), 
+                    shiftEnd: formatTime(u.shiftEnd) 
+                }));
                 Swal.close();
             }
         }
@@ -606,11 +631,10 @@
             const distance = calculateDistance(APP_SETTINGS.officeLat, APP_SETTINGS.officeLng, userCurrentLocation.lat, userCurrentLocation.lng);
             const isLocationValid = distance <= APP_SETTINGS.radiusAllowed;
 
-            const now = new Date();
-            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const dateStr = getLocalYYYYMMDD(new Date());
             
-            // ค้นหาว่าวันนี้มีการลงชื่อเข้างานหรือยัง
-            let todayRecord = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date.includes(dateStr));
+            // ค้นหาว่าวันนี้มีการลงชื่อเข้างานหรือยัง (ใช้ Format วันที่ให้ตรงกันแบบ 100%)
+            let todayRecord = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date === dateStr);
 
             let canCheckIn = false;
             let canCheckOut = false;
@@ -621,6 +645,10 @@
             } else if (todayRecord.timeOut === '-') {
                 // เข้างานแล้วแต่ยังไม่ออก เปิดปุ่มออกงาน
                 canCheckOut = true;
+            } else {
+                // ออกงานแล้ว (ครบ 1 รอบต่อวัน) ปิดทั้งคู่
+                canCheckIn = false;
+                canCheckOut = false;
             }
 
             // ต้องมีรูป พิกัดถูกต้อง และอยู่ในสถานะที่เหมาะสม จึงจะกดได้
@@ -636,8 +664,14 @@
         // ---------- ลงชื่อเข้างาน (ส่ง API ไปยัง Google Sheets) ----------
         document.getElementById('btn-checkin').addEventListener('click', function() {
             const now = new Date();
-            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const dateStr = getLocalYYYYMMDD(now);
             
+            // ตรวจสอบป้องกันการลงชื่อเข้างานซ้ำ
+            let todayRecord = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date === dateStr);
+            if (todayRecord) {
+                return Swal.fire('ผิดพลาด', 'คุณได้ลงชื่อเข้างานในวันนี้ไปแล้ว', 'error');
+            }
+
             // บังคับรูปแบบ HH:mm สำหรับเวลาเข้างาน 24 ชม. ตลอดกาล
             const h = String(now.getHours()).padStart(2, '0');
             const m = String(now.getMinutes()).padStart(2, '0');
@@ -673,14 +707,15 @@
         // ---------- ลงชื่อออกงาน (ส่ง API ไปยัง Google Sheets) ----------
         document.getElementById('btn-checkout').addEventListener('click', async function() {
             const now = new Date();
-            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+            const dateStr = getLocalYYYYMMDD(now);
             
             // บังคับรูปแบบ HH:mm สำหรับเวลาออกงาน 24 ชม. ตลอดกาล
             const h = String(now.getHours()).padStart(2, '0');
             const m = String(now.getMinutes()).padStart(2, '0');
             const timeStr = `${h}:${m}`;
             
-            let record = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date.includes(dateStr) && r.timeOut === '-');
+            // หาข้อมูลที่เข้างานแล้ว แต่ยังไม่ได้ออกงาน
+            let record = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date === dateStr && r.timeOut === '-');
 
             if (!record) return Swal.fire('ผิดพลาด', 'ไม่พบข้อมูลเข้างานของวันนี้ หรือคุณได้ลงชื่อออกไปแล้ว', 'error');
 
