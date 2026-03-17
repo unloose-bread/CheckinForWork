@@ -414,8 +414,8 @@
                 return data;
             } catch (error) {
                 console.error('API Error:', error);
-                Swal.fire('ข้อผิดพลาด', 'ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาลองใหม่อีกครั้ง', 'error');
-                return { success: false };
+                // Return success: false เพื่อให้โค้ดดักจับในส่วน Else บล็อกถัดไปได้
+                return { success: false, error: 'ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ หรือเกิดข้อผิดพลาดในการโหลดข้อมูล' };
             }
         }
 
@@ -437,6 +437,8 @@
                     shiftEnd: formatTime(u.shiftEnd) 
                 }));
                 Swal.close();
+            } else {
+                Swal.fire('ข้อผิดพลาด', data.error || 'ไม่สามารถโหลดข้อมูลจากฐานข้อมูลได้', 'error');
             }
         }
 
@@ -518,7 +520,7 @@
                     }
                 });
             } else {
-                Swal.fire({ icon: 'error', title: 'ข้อมูลไม่ถูกต้อง', text: 'กรุณาตรวจสอบอีเมลและรหัสผ่านอีกครั้ง' });
+                Swal.fire({ icon: 'error', title: 'ข้อมูลไม่ถูกต้อง', text: result.error || 'กรุณาตรวจสอบอีเมลและรหัสผ่านอีกครั้ง' });
             }
         });
 
@@ -689,6 +691,8 @@
                     };
                     
                     const res = await callAPI(payload, 'กำลังบันทึกข้อมูลและอัปโหลดรูปภาพลง Drive...');
+                    
+                    // ป้องกันการหมุนค้างด้วย Else
                     if(res.success) {
                         ATTENDANCE_DATA.push({
                             id: recordId, date: dateStr, empId: currentUser.empId, name: currentUser.name,
@@ -696,6 +700,8 @@
                         });
                         Swal.fire('สำเร็จ', 'บันทึกเข้างานเรียบร้อยแล้ว', 'success');
                         retakePhoto(); renderEmpHistory();
+                    } else {
+                        Swal.fire('เกิดข้อผิดพลาด', res.error || 'ไม่สามารถบันทึกข้อมูลเข้างานได้', 'error');
                     }
                 }
             });
@@ -721,10 +727,15 @@
             }).then(async (result) => {
                 if (result.isConfirmed) {
                     const res = await callAPI({ action: 'checkout', date: dateStr, empId: currentUser.empId, timeOut: timeStr }, 'กำลังบันทึกเวลาออกงาน...');
+                    
+                    // ป้องกันการหมุนค้างด้วย Else
                     if(res.success) {
                         record.timeOut = timeStr; // Update State locally
                         Swal.fire('สำเร็จ', 'บันทึกออกงานเรียบร้อยแล้ว', 'success');
                         retakePhoto(); renderEmpHistory();
+                    } else {
+                        // ปิดกล่องหมุน และแจ้ง Error
+                        Swal.fire('เกิดข้อผิดพลาด', res.error || 'หาข้อมูลเข้างานในระบบไม่พบ หรือไม่สามารถบันทึกเวลาออกงานได้', 'error');
                     }
                 }
             });
@@ -816,6 +827,8 @@
             if(res.success){
                 APP_SETTINGS = newSettings;
                 Swal.fire({ icon: 'success', title: 'บันทึกสำเร็จ', text: 'อัปเดตจุดเช็คอินเรียบร้อย', timer: 1500, showConfirmButton: false });
+            } else {
+                Swal.fire('ข้อผิดพลาด', res.error || 'บันทึกการตั้งค่าไม่สำเร็จ', 'error');
             }
         }
 
@@ -851,6 +864,8 @@
                 document.getElementById('add-emp-form').reset();
                 updateAdminEmpDropdown();
                 renderEmployeeCards();
+            } else {
+                Swal.fire('ข้อผิดพลาด', res.error || 'เพิ่มพนักงานไม่สำเร็จ', 'error');
             }
         });
 
@@ -867,16 +882,17 @@
                 cancelButtonText: 'ยกเลิก'
             }).then(async (result) => {
                 if (result.isConfirmed) {
-                    // ส่ง Request ลบพนักงานไปที่ Backend
                     const res = await callAPI({ action: 'deleteEmployee', empId: empId }, 'กำลังลบข้อมูลพนักงาน...');
                     
-                    // เพื่อให้ UI อัปเดตทันที (ในกรณีที่ Backend ยิงกลับมาหรือยังไม่รองรับการลบ เราจะลบจากหน้าบ้านเลย)
-                    MOCK_USERS = MOCK_USERS.filter(u => u.empId !== empId);
-                    updateAdminEmpDropdown();
-                    renderEmployeeCards();
-                    renderAdminTable(); // อัปเดตตารางสรุปด้วยถ้ามี Filter ค้างอยู่
-                    
-                    Swal.fire('ลบสำเร็จ', 'ลบข้อมูลพนักงานเรียบร้อยแล้ว', 'success');
+                    if(res.success) {
+                        MOCK_USERS = MOCK_USERS.filter(u => u.empId !== empId);
+                        updateAdminEmpDropdown();
+                        renderEmployeeCards();
+                        renderAdminTable(); 
+                        Swal.fire('ลบสำเร็จ', 'ลบข้อมูลพนักงานเรียบร้อยแล้ว', 'success');
+                    } else {
+                        Swal.fire('ข้อผิดพลาด', res.error || 'ลบข้อมูลพนักงานไม่สำเร็จ', 'error');
+                    }
                 }
             });
         }
