@@ -651,14 +651,11 @@
                 canCheckOut = false;
             }
 
-            // ต้องมีรูป พิกัดถูกต้อง และอยู่ในสถานะที่เหมาะสม จึงจะกดได้
-            if (currentPhotoBase64 && isLocationValid) {
-                btnIn.disabled = !canCheckIn;
-                btnOut.disabled = !canCheckOut;
-            } else {
-                btnIn.disabled = true;
-                btnOut.disabled = true;
-            }
+            // ปุ่มลงชื่อเข้างาน: ต้องมีพิกัดถูกต้อง, มีรูปถ่าย, และยังไม่ได้เข้างาน
+            btnIn.disabled = !(isLocationValid && currentPhotoBase64 && canCheckIn);
+            
+            // ปุ่มลงชื่อออกงาน: ต้องมีพิกัดถูกต้อง และเข้างานแล้วแต่ยังไม่ออก (ไม่ต้องใช้รูปถ่าย)
+            btnOut.disabled = !(isLocationValid && canCheckOut);
         }
 
         // ---------- ลงชื่อเข้างาน (ส่ง API ไปยัง Google Sheets) ----------
