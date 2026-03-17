@@ -493,6 +493,9 @@
 
         function getLocation() {
             const statusDiv = document.getElementById('location-status');
+            // รีเซ็ตข้อความสถานะเมื่อเริ่มดึงพิกัดใหม่
+            statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> กำลังดึงพิกัดของคุณ...';
+            
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     (position) => {
@@ -502,7 +505,7 @@
                         if (distance <= APP_SETTINGS.radiusAllowed) {
                             statusDiv.innerHTML = `<span class="text-success font-bold"><i class="fas fa-check-circle"></i> พิกัดถูกต้อง (${Math.round(distance)}m)</span>`;
                         } else {
-                            statusDiv.innerHTML = `<span class="text-danger font-bold"><i class="fas fa-times-circle"></i> อยู่นอกพื้นที่ (${Math.round(distance)}m)</span>`;
+                            statusDiv.innerHTML = `<span class="text-danger font-bold"><i class="fas fa-times-circle"></i> อยู่นอกพื้นที่ (${Math.round(distance)}m)</span> <button onclick="getLocation()" class="ml-2 bg-red-100 hover:bg-red-200 text-red-800 px-2 py-1 rounded-md text-xs font-medium transition shadow-sm"><i class="fas fa-redo mr-1"></i>ลองใหม่</button>`;
                         }
                         checkEnableButtons();
                     },
@@ -519,7 +522,8 @@
                                 errorMsg = "หมดเวลาในการดึงตำแหน่ง";
                                 break;
                         }
-                        statusDiv.innerHTML = `<span class="text-danger"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</span>`; 
+                        // เพิ่มปุ่มลองใหม่เมื่อเกิด Error
+                        statusDiv.innerHTML = `<div class="flex items-center justify-center gap-2"><span class="text-danger"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</span> <button onclick="getLocation()" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-md text-xs font-medium transition shadow-sm"><i class="fas fa-redo mr-1"></i>ดึงพิกัดใหม่</button></div>`; 
                     },
                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
                 );
