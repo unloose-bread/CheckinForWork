@@ -338,9 +338,32 @@
         // ฟังก์ชันช่วยจัด Format เวลา (ดึงเฉพาะ HH:mm ป้องกันปัญหาเวลาจาก Sheets แสดงเป็นเลขยาวๆ)
         function formatTime(timeStr) {
             if (!timeStr || timeStr === '-') return '-';
-            const match = String(timeStr).match(/(\d{2}):(\d{2})/);
-            if (match) return `${match[1]}:${match[2]}`;
-            return String(timeStr);
+            const str = String(timeStr).trim();
+            
+            // ตรวจสอบว่าเป็นรูปแบบวันที่ ISO จากฐานข้อมูล (มี T และ Z)
+            if (str.includes('T') && str.includes('Z')) {
+                const d = new Date(str);
+                if (!isNaN(d.getTime())) {
+                    const h = String(d.getHours()).padStart(2, '0');
+                    const m = String(d.getMinutes()).padStart(2, '0');
+                    return `${h}:${m}`;
+                }
+            }
+
+            // กรณีเป็น Text ธรรมดาที่อาจมี AM/PM ติดมา
+            const match = str.match(/(\d{1,2}):(\d{2})/);
+            if (match) {
+                let h = parseInt(match[1], 10);
+                const m = match[2];
+                const isPM = str.toLowerCase().includes('pm');
+                const isAM = str.toLowerCase().includes('am');
+                
+                if (isPM && h < 12) h += 12;
+                if (isAM && h === 12) h = 0;
+                
+                return String(h).padStart(2, '0') + ':' + m;
+            }
+            return str;
         }
 
         // ฟังก์ชันแปลง URL ภาพจาก Google Drive ให้อ่านและแสดงผลใน <img> ได้
@@ -397,9 +420,16 @@
         // ==========================================
         function updateClock() {
             const now = new Date();
-            const timeStr = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            
+            // บังคับรูปแบบ 24 ชั่วโมงเสมอ (HH:mm:ss)
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const s = String(now.getSeconds()).padStart(2, '0');
+            const timeStr = `${h}:${m}:${s}`;
+            
             const months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
             const dateStr = `${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear() + 543}`;
+            
             if(document.getElementById('real-time')) document.getElementById('real-time').innerText = timeStr;
             if(document.getElementById('real-date')) document.getElementById('real-date').innerText = dateStr;
         }
@@ -442,7 +472,7 @@
 
             if (result.success && result.user) {
                 currentUser = result.user;
-                // ตัดข้อมูลเวลาส่วนตัวพนักงานทันทีหลัง Login
+                // ตัดข้อมูลเวลาส่วนตัวพนักงานทันทีหลัง Login ให้อยู่ในรูปแบบ HH:mm
                 currentUser.shiftStart = formatTime(currentUser.shiftStart);
                 currentUser.shiftEnd = formatTime(currentUser.shiftEnd);
 
@@ -607,8 +637,11 @@
         document.getElementById('btn-checkin').addEventListener('click', function() {
             const now = new Date();
             const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            // ดึงเวลาในรูปแบบ HH:mm ตลอด
-            const timeStr = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false });
+            
+            // บังคับรูปแบบ HH:mm สำหรับเวลาเข้างาน 24 ชม. ตลอดกาล
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const timeStr = `${h}:${m}`;
             
             const [inH, inM] = timeStr.split(':').map(Number);
             const [shH, shM] = currentUser.shiftStart.split(':').map(Number);
@@ -641,7 +674,11 @@
         document.getElementById('btn-checkout').addEventListener('click', async function() {
             const now = new Date();
             const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-            const timeStr = now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', hour12: false });
+            
+            // บังคับรูปแบบ HH:mm สำหรับเวลาออกงาน 24 ชม. ตลอดกาล
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const timeStr = `${h}:${m}`;
             
             let record = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date.includes(dateStr) && r.timeOut === '-');
 
