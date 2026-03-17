@@ -84,10 +84,6 @@
                     เข้าสู่ระบบ <i class="fas fa-sign-in-alt ml-2"></i>
                 </button>
             </form>
-            <div class="mt-4 text-xs text-center text-gray-400">
-                <p>Admin: admin@unloose.com / 1234</p>
-                <p>พนักงาน: emp@unloose.com / 1234</p>
-            </div>
         </div>
     </div>
 
@@ -109,7 +105,7 @@
             <!-- Time Section -->
             <div class="bg-primary text-white rounded-xl shadow-sm p-6 text-center flex flex-col justify-center relative overflow-hidden">
                 <div class="absolute top-0 right-0 p-4 opacity-10"><i class="fas fa-clock text-6xl"></i></div>
-                <p class="text-sm text-secondary font-medium mb-1" id="real-date">วันจันทร์ที่ 1 มกราคม 2024</p>
+                <p class="text-sm text-secondary font-medium mb-1" id="real-date">-</p>
                 <h1 class="text-5xl font-bold tracking-wider mb-2" id="real-time">00:00:00</h1>
                 <p class="text-xs text-green-200">* วันและเวลาใช้ตามจริงของระบบ ไม่สามารถแก้ไขได้</p>
             </div>
@@ -149,6 +145,8 @@
                             <th class="px-4 py-2">เข้างาน</th>
                             <th class="px-4 py-2">สถานะ</th>
                             <th class="px-4 py-2">ออกงาน</th>
+                            <th class="px-4 py-2 text-center">เวลาปกติ</th>
+                            <th class="px-4 py-2 text-center rounded-tr-lg">OT</th>
                         </tr>
                     </thead>
                     <tbody id="emp-history-tbody" class="divide-y divide-gray-100">
@@ -311,7 +309,6 @@
                 </div>
             </div>
         </div>
-
     </div>
 
     <!-- ==================== FOOTER ==================== -->
@@ -324,44 +321,53 @@
     <!-- ==================== JAVASCRIPT ==================== -->
     <script>
         // ==========================================
-        // 1. MOCK DATABASE (มีการเพิ่มค่าจ้างและ OT)
+        // 1. CONFIG: Web App URL (เชื่อมต่อ Google Sheets API)
         // ==========================================
-        let MOCK_USERS = [
-            { id: 'admin@unloose.com', pass: '1234', role: 'admin', name: 'ผู้ดูแลระบบ' },
-            { 
-                id: 'emp@unloose.com', pass: '1234', role: 'employee', empId: 'EMP001', 
-                name: 'สมชาย ใจดี', empType: 'daily', shiftStart: '07:00', shiftEnd: '15:00', 
-                baseWage: 350, // บาทต่อวัน
-                otWage: 50     // บาทต่อชั่วโมง OT
-            },
-            { 
-                id: 'emp2@unloose.com', pass: '1234', role: 'employee', empId: 'EMP002', 
-                name: 'สมหญิง รักงาน', empType: 'hourly', shiftStart: '08:00', shiftEnd: '17:00', 
-                baseWage: 45,  // บาทต่อชั่วโมง
-                otWage: 60     // บาทต่อชั่วโมง OT
-            }
-        ];
+        const WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbxEfy90SU5CoFk7xOswZDqqFnpVoA6iAguOODAnvSwGRLsjX9Jc-DxIBF3r97HA7yCVtQ/exec';
 
-        let APP_SETTINGS = {
-            officeLat: 6.425, // พิกัดยะลาจำลอง
-            officeLng: 101.825,
-            radiusAllowed: 100 
-        };
-
-        // ใช้ Date ย้อนหลังนิดหน่อยเพื่อให้มีข้อมูลแสดง
-        const todayStr = new Date().toISOString().split('T')[0];
-        let ATTENDANCE_DATA = [
-            { id: 1, date: todayStr, empId: 'EMP001', name: 'สมชาย ใจดี', timeIn: '06:55', timeOut: '17:30', status: 'ปกติ', photo: 'https://via.placeholder.com/50' },
-            { id: 2, date: todayStr, empId: 'EMP002', name: 'สมหญิง รักงาน', timeIn: '08:20', timeOut: '18:00', status: 'สาย', photo: 'https://via.placeholder.com/50' },
-        ];
-
+        // State Variables (รอรับข้อมูลจาก Database จริง)
+        let MOCK_USERS = [];
+        let APP_SETTINGS = { officeLat: 0, officeLng: 0, radiusAllowed: 0 };
+        let ATTENDANCE_DATA = [];
+        
         let currentUser = null;
         let currentPhotoBase64 = null;
         let userCurrentLocation = { lat: null, lng: null };
         let cameraStream = null;
 
+        // ฟังก์ชันช่วยเรียก API (POST Request to Google Apps Script)
+        async function callAPI(payload, loadingMsg = 'กำลังประมวลผล...') {
+            Swal.fire({ title: loadingMsg, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+            try {
+                const response = await fetch(WEB_APP_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/plain;charset=utf-8', // ใช้ text/plain ป้องกันปัญหา CORS ใน GAS
+                    },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                return data;
+            } catch (error) {
+                console.error('API Error:', error);
+                Swal.fire('ข้อผิดพลาด', 'ไม่สามารถเชื่อมต่อฐานข้อมูลได้ กรุณาลองใหม่อีกครั้ง', 'error');
+                return { success: false };
+            }
+        }
+
+        // ดึงข้อมูลทั้งหมดจากฐานข้อมูลเมื่อล็อกอินสำเร็จ
+        async function fetchInitialData() {
+            const data = await callAPI({ action: 'getData' }, 'กำลังโหลดข้อมูลจากระบบ...');
+            if(data.success) {
+                APP_SETTINGS = data.settings;
+                ATTENDANCE_DATA = data.attendance;
+                MOCK_USERS = data.users;
+                Swal.close();
+            }
+        }
+
         // ==========================================
-        // 2. ระบบ เวลา & วันที่ อัตโนมัติ
+        // 2. ระบบ เวลา & วันที่ และ Helper Functions
         // ==========================================
         function updateClock() {
             const now = new Date();
@@ -374,26 +380,24 @@
         setInterval(updateClock, 1000);
         updateClock();
 
-        // ฟังก์ชันเปิดปิดการมองเห็นรหัสผ่าน
         function togglePasswordVisibility() {
             const pwdInput = document.getElementById('login-password');
             const eyeIcon = document.getElementById('eye-icon');
             if (pwdInput.type === 'password') {
                 pwdInput.type = 'text';
-                eyeIcon.classList.remove('fa-eye');
-                eyeIcon.classList.add('fa-eye-slash');
+                eyeIcon.classList.remove('fa-eye'); eyeIcon.classList.add('fa-eye-slash');
             } else {
                 pwdInput.type = 'password';
-                eyeIcon.classList.remove('fa-eye-slash');
-                eyeIcon.classList.add('fa-eye');
+                eyeIcon.classList.remove('fa-eye-slash'); eyeIcon.classList.add('fa-eye');
             }
         }
 
-        // แปลงรูปแบบวันที่เป็น "17 มีนาคม 2569"
         function formatThaiDate(isoDate) {
             if (!isoDate || isoDate === '-') return '-';
-            const parts = isoDate.split('-');
-            if (parts.length !== 3) return isoDate;
+            // ตัด Timezone ออกถ้าระบบดึงมาเป็น Date String ยาวๆ
+            const cleanDate = isoDate.split('T')[0]; 
+            const parts = cleanDate.split('-');
+            if (parts.length !== 3) return cleanDate;
             const months = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
             const d = parseInt(parts[2], 10);
             const m = parseInt(parts[1], 10) - 1;
@@ -404,19 +408,23 @@
         // ==========================================
         // 3. ระบบ LOGIN & ROUTING
         // ==========================================
-        document.getElementById('login-form').addEventListener('submit', function(e) {
+        document.getElementById('login-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             const email = document.getElementById('login-email').value;
             const pass = document.getElementById('login-password').value;
-            const user = MOCK_USERS.find(u => u.id === email && u.pass === pass);
+            
+            // เช็ค Login ผ่าน API แทน Mock
+            const result = await callAPI({ action: 'login', email: email, pass: pass }, 'กำลังตรวจสอบรหัสผ่าน...');
 
-            if (user) {
-                currentUser = user;
+            if (result.success && result.user) {
+                currentUser = result.user;
+                await fetchInitialData(); // ดึง Data หลังจาก Login ผ่าน
+
                 Swal.fire({
-                    icon: 'success', title: 'เข้าสู่ระบบสำเร็จ', text: `ยินดีต้อนรับ ${user.name}`, timer: 1500, showConfirmButton: false
+                    icon: 'success', title: 'เข้าสู่ระบบสำเร็จ', text: `ยินดีต้อนรับ ${currentUser.name}`, timer: 1500, showConfirmButton: false
                 }).then(() => {
                     document.getElementById('login-screen').classList.add('hidden');
-                    if (user.role === 'admin') {
+                    if (currentUser.role === 'admin') {
                         document.getElementById('admin-screen').classList.remove('hidden');
                         document.getElementById('admin-screen').classList.add('flex');
                         initAdminView();
@@ -450,7 +458,7 @@
         }
 
         // ==========================================
-        // 4. ฝั่งพนักงาน (EMPLOYEE VIEW) - คงเดิมแต่ปรับให้สมูท
+        // 4. ฝั่งพนักงาน (EMPLOYEE VIEW)
         // ==========================================
         function initEmployeeView() {
             document.getElementById('emp-name-display').innerText = currentUser.name;
@@ -493,7 +501,6 @@
 
         function getLocation() {
             const statusDiv = document.getElementById('location-status');
-            // รีเซ็ตข้อความสถานะเมื่อเริ่มดึงพิกัดใหม่
             statusDiv.innerHTML = '<i class="fas fa-spinner fa-spin mr-1"></i> กำลังดึงพิกัดของคุณ...';
             
             if (navigator.geolocation) {
@@ -512,17 +519,10 @@
                     (error) => { 
                         let errorMsg = "ไม่สามารถดึงพิกัดได้";
                         switch(error.code) {
-                            case error.PERMISSION_DENIED:
-                                errorMsg = "คุณไม่อนุญาตให้เข้าถึงตำแหน่ง (GPS)";
-                                break;
-                            case error.POSITION_UNAVAILABLE:
-                                errorMsg = "ข้อมูลตำแหน่งไม่พร้อมใช้งาน";
-                                break;
-                            case error.TIMEOUT:
-                                errorMsg = "หมดเวลาในการดึงตำแหน่ง";
-                                break;
+                            case error.PERMISSION_DENIED: errorMsg = "คุณไม่อนุญาตให้เข้าถึงตำแหน่ง (GPS)"; break;
+                            case error.POSITION_UNAVAILABLE: errorMsg = "ข้อมูลตำแหน่งไม่พร้อมใช้งาน"; break;
+                            case error.TIMEOUT: errorMsg = "หมดเวลาในการดึงตำแหน่ง"; break;
                         }
-                        // เพิ่มปุ่มลองใหม่เมื่อเกิด Error
                         statusDiv.innerHTML = `<div class="flex items-center justify-center gap-2"><span class="text-danger"><i class="fas fa-exclamation-triangle"></i> ${errorMsg}</span> <button onclick="getLocation()" class="bg-gray-200 hover:bg-gray-300 text-gray-800 px-3 py-1 rounded-md text-xs font-medium transition shadow-sm"><i class="fas fa-redo mr-1"></i>ดึงพิกัดใหม่</button></div>`; 
                     },
                     { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
@@ -554,9 +554,11 @@
             }
         }
 
+        // ---------- ลงชื่อเข้างาน (ส่ง API ไปยัง Google Sheets) ----------
         document.getElementById('btn-checkin').addEventListener('click', function() {
             const now = new Date();
-            const dateStr = now.toISOString().split('T')[0];
+            // จัด Format วันที่เป็น YYYY-MM-DD เพื่อบันทึกลง Database
+            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const timeStr = now.toTimeString().substring(0, 5);
             
             const [inH, inM] = timeStr.split(':').map(Number);
@@ -565,33 +567,48 @@
 
             Swal.fire({
                 title: 'ยืนยันลงชื่อเข้างาน?', text: `เวลา: ${timeStr} น.`, icon: 'question', showCancelButton: true, confirmButtonText: 'ยืนยัน', confirmButtonColor: '#14532d'
-            }).then((result) => {
+            }).then(async (result) => {
                 if (result.isConfirmed) {
-                    ATTENDANCE_DATA.push({
-                        id: Date.now(), date: dateStr, empId: currentUser.empId, name: currentUser.name,
-                        timeIn: timeStr, timeOut: '-', status: status, photo: currentPhotoBase64
-                    });
-                    Swal.fire('สำเร็จ', 'บันทึกเข้างานแล้ว', 'success');
-                    retakePhoto(); renderEmpHistory();
+                    const recordId = Date.now();
+                    const payload = {
+                        action: 'checkin', id: recordId, date: dateStr, empId: currentUser.empId, 
+                        name: currentUser.name, timeIn: timeStr, status: status, photoBase64: currentPhotoBase64
+                    };
+                    
+                    const res = await callAPI(payload, 'กำลังบันทึกข้อมูลและอัปโหลดรูปภาพลง Drive...');
+                    if(res.success) {
+                        ATTENDANCE_DATA.push({
+                            id: recordId, date: dateStr, empId: currentUser.empId, name: currentUser.name,
+                            timeIn: timeStr, timeOut: '-', status: status, photo: res.photoUrl
+                        });
+                        Swal.fire('สำเร็จ', 'บันทึกเข้างานเรียบร้อยแล้ว', 'success');
+                        retakePhoto(); renderEmpHistory();
+                    }
                 }
             });
         });
 
-        document.getElementById('btn-checkout').addEventListener('click', function() {
+        // ---------- ลงชื่อออกงาน (ส่ง API ไปยัง Google Sheets) ----------
+        document.getElementById('btn-checkout').addEventListener('click', async function() {
             const now = new Date();
-            const dateStr = now.toISOString().split('T')[0];
+            const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
             const timeStr = now.toTimeString().substring(0, 5);
-            let record = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date === dateStr && r.timeOut === '-');
+            
+            // หา Record ใน State ว่าวันนี้เข้างานหรือยัง
+            let record = ATTENDANCE_DATA.find(r => r.empId === currentUser.empId && r.date.includes(dateStr) && r.timeOut === '-');
 
-            if (!record) return Swal.fire('ผิดพลาด', 'ไม่พบข้อมูลเข้างานของวันนี้', 'error');
+            if (!record) return Swal.fire('ผิดพลาด', 'ไม่พบข้อมูลเข้างานของวันนี้ หรือคุณได้ลงชื่อออกไปแล้ว', 'error');
 
             Swal.fire({
                 title: 'ยืนยันลงชื่อออกงาน?', text: `เวลา: ${timeStr} น.`, icon: 'question', showCancelButton: true, confirmButtonText: 'ยืนยัน', confirmButtonColor: '#14532d'
-            }).then((result) => {
+            }).then(async (result) => {
                 if (result.isConfirmed) {
-                    record.timeOut = timeStr;
-                    Swal.fire('สำเร็จ', 'บันทึกออกงานแล้ว', 'success');
-                    retakePhoto(); renderEmpHistory();
+                    const res = await callAPI({ action: 'checkout', date: dateStr, empId: currentUser.empId, timeOut: timeStr }, 'กำลังบันทึกเวลาออกงาน...');
+                    if(res.success) {
+                        record.timeOut = timeStr; // Update State locally
+                        Swal.fire('สำเร็จ', 'บันทึกออกงานเรียบร้อยแล้ว', 'success');
+                        retakePhoto(); renderEmpHistory();
+                    }
                 }
             });
         });
@@ -599,11 +616,22 @@
         function renderEmpHistory() {
             const tbody = document.getElementById('emp-history-tbody');
             tbody.innerHTML = '';
+            // กรองและดึง 7 ข้อมูลล่าสุด
             const myHistory = ATTENDANCE_DATA.filter(r => r.empId === currentUser.empId).reverse().slice(0, 7);
             myHistory.forEach(r => {
                 const tr = document.createElement('tr'); tr.className = 'hover:bg-gray-50';
-                let stBadge = r.status === 'ปกติ' ? `<span class="text-green-600">ปกติ</span>` : `<span class="text-red-600">สาย</span>`;
-                tr.innerHTML = `<td class="px-4 py-2">${formatThaiDate(r.date)}</td><td class="px-4 py-2">${r.timeIn}</td><td class="px-4 py-2">${stBadge}</td><td class="px-4 py-2">${r.timeOut}</td>`;
+                let stBadge = r.status === 'ปกติ' ? `<span class="text-green-600 bg-green-50 px-2 py-1 rounded text-xs">ปกติ</span>` : `<span class="text-red-600 bg-red-50 px-2 py-1 rounded text-xs">สาย</span>`;
+                
+                const workData = calculateWorkData(r.empId, r.timeIn, r.timeOut);
+                
+                tr.innerHTML = `
+                    <td class="px-4 py-2">${formatThaiDate(r.date)}</td>
+                    <td class="px-4 py-2 font-bold">${r.timeIn}</td>
+                    <td class="px-4 py-2">${stBadge}</td>
+                    <td class="px-4 py-2 font-bold">${r.timeOut}</td>
+                    <td class="px-4 py-2 text-center text-blue-700">${formatDecimalHours(workData.normHrs)}</td>
+                    <td class="px-4 py-2 text-center text-orange-600 font-medium">${formatDecimalHours(workData.otHrs)}</td>
+                `;
                 tbody.appendChild(tr);
             });
         }
@@ -622,14 +650,9 @@
         }
 
         function switchAdminTab(tabId, btnElement) {
-            // ซ่อนทุกแท็บ
             document.querySelectorAll('.admin-tab-content').forEach(el => el.classList.add('hidden'));
             document.getElementById(tabId).classList.remove('hidden');
-            
-            // ลบ active จากปุ่มทั้งหมด
             document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active', 'bg-green-50', 'border-primary'));
-            
-            // ใส่ active ปุ่มที่กด
             btnElement.classList.add('active', 'bg-green-50');
         }
 
@@ -663,11 +686,17 @@
             }
         }
 
-        function saveAdminSettings() {
-            APP_SETTINGS.officeLat = parseFloat(document.getElementById('admin-lat').value);
-            APP_SETTINGS.officeLng = parseFloat(document.getElementById('admin-lng').value);
-            APP_SETTINGS.radiusAllowed = parseInt(document.getElementById('admin-radius').value);
-            Swal.fire({ icon: 'success', title: 'บันทึกสำเร็จ', text: 'อัปเดตจุดเช็คอินเรียบร้อย', timer: 1500, showConfirmButton: false });
+        async function saveAdminSettings() {
+            const newSettings = {
+                officeLat: parseFloat(document.getElementById('admin-lat').value),
+                officeLng: parseFloat(document.getElementById('admin-lng').value),
+                radiusAllowed: parseInt(document.getElementById('admin-radius').value)
+            };
+            const res = await callAPI({ action: 'saveSettings', settings: newSettings }, 'กำลังบันทึกการตั้งค่าลงฐานข้อมูล...');
+            if(res.success){
+                APP_SETTINGS = newSettings;
+                Swal.fire({ icon: 'success', title: 'บันทึกสำเร็จ', text: 'อัปเดตจุดเช็คอินเรียบร้อย', timer: 1500, showConfirmButton: false });
+            }
         }
 
         // --- TAB 2: MANAGE EMPLOYEES ---
@@ -676,9 +705,11 @@
             document.getElementById('lbl-base-wage').innerText = type === 'daily' ? 'ค่าจ้างต่อวัน (บาท)' : 'ค่าจ้างต่อชั่วโมง (บาท)';
         }
 
-        document.getElementById('add-emp-form').addEventListener('submit', function(e) {
+        document.getElementById('add-emp-form').addEventListener('submit', async function(e) {
             e.preventDefault();
-            const newEmpId = 'EMP' + String(MOCK_USERS.length).padStart(3, '0');
+            const empCount = MOCK_USERS.filter(u => u.role === 'employee').length + 1;
+            const newEmpId = 'EMP' + String(empCount).padStart(3, '0');
+            
             const newEmp = {
                 id: document.getElementById('add-email').value,
                 pass: document.getElementById('add-pass').value,
@@ -691,12 +722,16 @@
                 baseWage: parseFloat(document.getElementById('add-baseWage').value),
                 otWage: parseFloat(document.getElementById('add-otWage').value)
             };
-            MOCK_USERS.push(newEmp);
+
+            const res = await callAPI({ action: 'addEmployee', user: newEmp }, 'กำลังเพิ่มพนักงานใหม่...');
             
-            Swal.fire('เพิ่มสำเร็จ', `รหัสพนักงาน: ${newEmpId}`, 'success');
-            document.getElementById('add-emp-form').reset();
-            updateAdminEmpDropdown();
-            renderEmployeeCards();
+            if(res.success){
+                MOCK_USERS.push(newEmp);
+                Swal.fire('เพิ่มสำเร็จ', `รหัสพนักงาน: ${newEmpId}`, 'success');
+                document.getElementById('add-emp-form').reset();
+                updateAdminEmpDropdown();
+                renderEmployeeCards();
+            }
         });
 
         function renderEmployeeCards() {
@@ -748,6 +783,7 @@
         function calculateWorkData(empId, timeIn, timeOut) {
             if (timeOut === '-') return { normHrs: 0, otHrs: 0, totalWage: 0 };
             const emp = MOCK_USERS.find(u => u.empId === empId);
+            if(!emp) return { normHrs: 0, otHrs: 0, totalWage: 0 };
             
             const inDec = timeToDecimal(timeIn);
             const outDec = timeToDecimal(timeOut);
@@ -759,19 +795,16 @@
             let otHrs = 0;
             let normHrs = totalWorked;
 
-            // ตรวจสอบว่ามี OT หรือไม่ (เลิกงานหลังเวลา shiftEnd)
             if (outDec > shiftEndDec) {
                 otHrs = outDec - shiftEndDec;
-                if(otHrs > totalWorked) otHrs = totalWorked; // ป้องกันบัคเข้างานหลังเลิกกะ
+                if(otHrs > totalWorked) otHrs = totalWorked;
                 normHrs = totalWorked - otHrs;
             }
 
             let wage = 0;
             if (emp.empType === 'daily') {
-                // รายวัน: ได้ค่าจ้างพื้นฐานเต็มวัน + ค่า OT ตามชั่วโมง
                 wage = emp.baseWage + (otHrs * emp.otWage);
             } else {
-                // รายชั่วโมง: (ชั่วโมงปกติ * ค่าจ้าง/ชม.) + (ชั่วโมงOT * ค่าOT/ชม.)
                 wage = (normHrs * emp.baseWage) + (otHrs * emp.otWage);
             }
 
@@ -784,8 +817,9 @@
             const empFilter = document.getElementById('filter-emp').value;
             
             let filteredData = ATTENDANCE_DATA;
-            if (startDate) filteredData = filteredData.filter(r => r.date >= startDate);
-            if (endDate) filteredData = filteredData.filter(r => r.date <= endDate);
+            // Clean date for filtering if it has time appended from Sheet
+            if (startDate) filteredData = filteredData.filter(r => r.date.split('T')[0] >= startDate);
+            if (endDate) filteredData = filteredData.filter(r => r.date.split('T')[0] <= endDate);
             if (empFilter) filteredData = filteredData.filter(r => r.empId === empFilter);
 
             const tbody = document.getElementById('admin-table-body');
@@ -799,9 +833,10 @@
                 const workData = calculateWorkData(r.empId, r.timeIn, r.timeOut);
                 grandTotalWage += workData.totalWage;
                 
-                const photoHtml = `<img src="${r.photo}" class="h-8 w-8 object-cover rounded cursor-pointer border" onclick="viewPhoto('${r.photo}')">`;
+                // รูปภาพมาจาก Google Drive URL
+                const photoHtml = r.photo && r.photo !== '-' ? `<img src="${r.photo}" class="h-8 w-8 object-cover rounded cursor-pointer border hover:opacity-80" onclick="viewPhoto('${r.photo}')" title="คลิกดูรูปภาพใหญ่">` : '-';
                 const inOutHtml = `<span class="font-bold">${r.timeIn}</span> - ${r.timeOut !== '-' ? `<span class="font-bold">${r.timeOut}</span>` : '-'}`;
-                const statusHtml = r.status === 'สาย' ? `<span class="text-red-600 bg-red-50 px-2 py-1 rounded text-xs">สาย</span>` : `<span class="text-green-600 bg-green-50 px-2 py-1 rounded text-xs">ปกติ</span>`;
+                const statusHtml = r.status === 'สาย' ? `<span class="text-red-600 bg-red-50 px-2 py-1 rounded text-xs border border-red-100">สาย</span>` : `<span class="text-green-600 bg-green-50 px-2 py-1 rounded text-xs border border-green-100">ปกติ</span>`;
 
                 tr.innerHTML = `
                     <td class="px-4 py-3">${formatThaiDate(r.date)}</td>
@@ -816,7 +851,6 @@
                 tbody.appendChild(tr);
             });
 
-            // อัปเดตผลรวมค่าจ้าง
             document.getElementById('total-wage-summary').innerText = grandTotalWage.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         }
 
@@ -831,8 +865,8 @@
             const empFilter = document.getElementById('filter-emp').value;
             
             let filteredData = ATTENDANCE_DATA;
-            if (startDate) filteredData = filteredData.filter(r => r.date >= startDate);
-            if (endDate) filteredData = filteredData.filter(r => r.date <= endDate);
+            if (startDate) filteredData = filteredData.filter(r => r.date.split('T')[0] >= startDate);
+            if (endDate) filteredData = filteredData.filter(r => r.date.split('T')[0] <= endDate);
             if (empFilter) filteredData = filteredData.filter(r => r.empId === empFilter);
 
             if(filteredData.length === 0) return Swal.fire('ไม่มีข้อมูล', 'ไม่พบข้อมูลที่ต้องการ Export', 'info');
