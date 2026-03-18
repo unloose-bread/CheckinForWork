@@ -199,6 +199,7 @@
                         <!-- JS Inject -->
                     </select>
                     <button onclick="renderAdminTable()" class="bg-primary hover:bg-green-800 text-white px-4 py-1.5 rounded transition shadow-sm"><i class="fas fa-search"></i> ค้นหา</button>
+                    
                     <button onclick="exportToExcel()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-1.5 rounded transition shadow flex items-center gap-2">
                         <i class="fas fa-file-excel"></i> Export Excel
                     </button>
@@ -216,6 +217,7 @@
                             <th class="px-4 py-3">สถานะ</th>
                             <th class="px-4 py-3 text-center">เวลาทำงานปกติ</th>
                             <th class="px-4 py-3 text-center text-orange-600">เวลา OT</th>
+                            <th class="px-4 py-3 text-center text-blue-800">รวมเวลาทำงาน</th>
                             <th class="px-4 py-3 text-right">ค่าจ้างรวม (฿)</th>
                         </tr>
                     </thead>
@@ -334,6 +336,13 @@
         let currentPhotoBase64 = null;
         let userCurrentLocation = { lat: null, lng: null };
         let cameraStream = null;
+        let otStatusMap = {}; // เก็บสถานะการคิด OT แยกรายบรรทัด (ตาม ID ของวันนั้นๆ)
+
+        // ฟังก์ชันอัปเดตสไลด์ OT รายบรรทัด
+        function toggleRowOT(recordId, isChecked) {
+            otStatusMap[recordId] = isChecked;
+            renderAdminTable(); // คำนวณใหม่เฉพาะข้อมูลตารางโดยไม่ต้องรีโหลดหน้า
+        }
 
         // ฟังก์ชันช่วยแปลงวันที่ให้เป็นรูปแบบ YYYY-MM-DD แบบ Local เสมอ
         function getLocalYYYYMMDD(dateVal) {
@@ -946,10 +955,11 @@
             return `${h} ชม. ${m} นาที`;
         }
 
-        function calculateWorkData(empId, timeIn, timeOut) {
-            if (timeOut === '-') return { normHrs: 0, otHrs: 0, totalWage: 0 };
+        // เพิ่มตัวแปร useOT เพื่อเช็คสถานะการเปิดปิดปุ่ม
+        function calculateWorkData(empId, timeIn, timeOut, useOT = true) {
+            if (timeOut === '-') return { normHrs: 0, otHrs: 0, totalHrs: 0, totalWage: 0 };
             const emp = MOCK_USERS.find(u => u.empId === empId);
-            if(!emp) return { normHrs: 0, otHrs: 0, totalWage: 0 };
+            if(!emp) return { normHrs: 0, otHrs: 0, totalHrs: 0, totalWage: 0 };
             
             const inDec = timeToDecimal(timeIn);
             const outDec = timeToDecimal(timeOut);
@@ -968,13 +978,23 @@
             }
 
             let wage = 0;
-            if (emp.empType === 'daily') {
-                wage = emp.baseWage + (otHrs * emp.otWage);
+            if (useOT) {
+                // คำนวณแบบบวก OT (เรทปกติ + เรท OT)
+                if (emp.empType === 'daily') {
+                    wage = emp.baseWage + (otHrs * emp.otWage);
+                } else {
+                    wage = (normHrs * emp.baseWage) + (otHrs * emp.otWage);
+                }
             } else {
-                wage = (normHrs * emp.baseWage) + (otHrs * emp.otWage);
+                // คำนวณแบบไม่เอา OT (เวลาทั้งหมด x เรทปกติ)
+                if (emp.empType === 'daily') {
+                    wage = emp.baseWage; // รายวันได้แค่ฐานรายวัน
+                } else {
+                    wage = totalWorked * emp.baseWage; // รายชั่วโมงคูณเรทปกติล้วนๆ
+                }
             }
 
-            return { normHrs, otHrs, totalWage: wage };
+            return { normHrs, otHrs, totalHrs: totalWorked, totalWage: wage };
         }
 
         function renderAdminTable() {
@@ -996,7 +1016,11 @@
                 const tr = document.createElement('tr');
                 tr.className = 'hover:bg-gray-50';
                 
-                const workData = calculateWorkData(r.empId, r.timeIn, r.timeOut);
+                // ดึงค่าการเปิด-ปิด OT รายบรรทัด (ค่าเริ่มต้นคือ true)
+                const useOT = otStatusMap[r.id] !== false; 
+                
+                // ส่งค่าสไลด์ไปที่ระบบคำนวณ
+                const workData = calculateWorkData(r.empId, r.timeIn, r.timeOut, useOT);
                 grandTotalWage += workData.totalWage;
                 
                 // รูปภาพมาจาก Google Drive URL (ดึงภาพให้มาแสดงได้)
@@ -1006,6 +1030,19 @@
                 const inOutHtml = `<span class="font-bold">${r.timeIn}</span> - ${r.timeOut !== '-' ? `<span class="font-bold">${r.timeOut}</span>` : '-'}`;
                 const statusHtml = r.status === 'สาย' ? `<span class="text-red-600 bg-red-50 px-2 py-1 rounded text-xs border border-red-100">สาย</span>` : `<span class="text-green-600 bg-green-50 px-2 py-1 rounded text-xs border border-green-100">ปกติ</span>`;
 
+                // สร้างปุ่มสไลด์สำหรับรายบรรทัด (แสดงเฉพาะตอนที่มีการลงชื่อออกแล้ว)
+                const otToggleHtml = r.timeOut !== '-' ? `
+                    <div class="mt-1 flex justify-center">
+                        <label class="flex items-center cursor-pointer" title="${useOT ? 'ปิดการบวกค่า OT' : 'เปิดการบวกค่า OT'}">
+                            <div class="relative">
+                                <input type="checkbox" class="peer sr-only" onchange="toggleRowOT(${r.id}, this.checked)" ${useOT ? 'checked' : ''}>
+                                <div class="block bg-gray-300 w-8 h-4 rounded-full peer-checked:bg-green-500 transition-colors"></div>
+                                <div class="absolute left-1 top-0.5 bg-white w-3 h-3 rounded-full transition-transform peer-checked:translate-x-4"></div>
+                            </div>
+                        </label>
+                    </div>
+                ` : '';
+
                 tr.innerHTML = `
                     <td class="px-4 py-3">${formatThaiDate(r.date)}</td>
                     <td class="px-4 py-3 font-medium text-gray-800">${r.name} <span class="text-xs text-gray-400">(${r.empId})</span></td>
@@ -1013,7 +1050,11 @@
                     <td class="px-4 py-3">${inOutHtml}</td>
                     <td class="px-4 py-3">${statusHtml}</td>
                     <td class="px-4 py-3 text-center text-blue-700">${formatDecimalHours(workData.normHrs)}</td>
-                    <td class="px-4 py-3 text-center text-orange-600 font-medium">${formatDecimalHours(workData.otHrs)}</td>
+                    <td class="px-4 py-3 text-center text-orange-600 font-medium">
+                        ${formatDecimalHours(workData.otHrs)}
+                        ${otToggleHtml}
+                    </td>
+                    <td class="px-4 py-3 text-center text-blue-900 font-bold">${formatDecimalHours(workData.totalHrs)}</td>
                     <td class="px-4 py-3 text-right font-bold text-primary">${r.timeOut !== '-' ? workData.totalWage.toFixed(2) : '-'}</td>
                 `;
                 tbody.appendChild(tr);
@@ -1039,15 +1080,17 @@
 
             if(filteredData.length === 0) return Swal.fire('ไม่มีข้อมูล', 'ไม่พบข้อมูลที่ต้องการ Export', 'info');
 
-            let csvContent = "\uFEFFวันที่,รหัสพนักงาน,ชื่อพนักงาน,สถานะ,เข้างาน,ออกงาน,ชั่วโมงทำงานปกติ,ชั่วโมง OT,ค่าจ้างรวม(บาท)\n";
+            let csvContent = "\uFEFFวันที่,รหัสพนักงาน,ชื่อพนักงาน,สถานะ,เข้างาน,ออกงาน,ชั่วโมงทำงานปกติ,ชั่วโมง OT,รวมเวลาทำงาน,ค่าจ้างรวม(บาท)\n";
             
             filteredData.forEach(r => {
-                const wd = calculateWorkData(r.empId, r.timeIn, r.timeOut);
+                const useOT = otStatusMap[r.id] !== false; // ดึงค่าการคิด OT แยกรายบรรทัดสำหรับ Export
+                const wd = calculateWorkData(r.empId, r.timeIn, r.timeOut, useOT);
                 const normStr = formatDecimalHours(wd.normHrs);
                 const otStr = formatDecimalHours(wd.otHrs);
+                const totalStr = formatDecimalHours(wd.totalHrs);
                 const wage = r.timeOut !== '-' ? wd.totalWage.toFixed(2) : '0';
                 
-                csvContent += `${formatThaiDate(r.date)},${r.empId},"${r.name}",${r.status},${r.timeIn},${r.timeOut},"${normStr}","${otStr}",${wage}\n`;
+                csvContent += `${formatThaiDate(r.date)},${r.empId},"${r.name}",${r.status},${r.timeIn},${r.timeOut},"${normStr}","${otStr}","${totalStr}",${wage}\n`;
             });
 
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
